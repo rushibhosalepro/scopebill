@@ -1,0 +1,24 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+
+# Local data and logs
+.invoice-test.json
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# System files
+.DS_Store
+Thumbs.db
+*.db-wal
+*.db-shm
+.smoke.json

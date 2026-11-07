@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: scopebill
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
+      - key: OPENROUTER_MODEL
+        value: openai/gpt-oss-120b
+      - key: DATABASE_PATH
+        value: /tmp/scopebill.db
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_SANDBOX_BUYER_EMAIL
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false

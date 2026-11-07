@@ -1,0 +1,31 @@
+{
+  "name": "scopebill",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "invoice:create": "bun run scripts/invoice-test.ts create",
+    "invoice:check": "bun run scripts/invoice-test.ts check",
+    "dev": "bun --watch src/server/index.ts",
+    "start": "bun run build && bun src/server/index.ts",
+    "ai:eval": "bun run scripts/ai-eval.ts",
+    "smoke": "bun run scripts/smoke.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "build": "bun build web/index.html --outdir dist --minify",
+    "preview": "bun run build && bun src/server/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "ag-grid-community": "^36.3.0",
+    "ag-grid-react": "^36.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}

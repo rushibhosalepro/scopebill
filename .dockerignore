@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.git
+.smoke*
+.invoice-test.json
+*.db
+*.db-wal
+*.db-shm
+node_modules
+dist
