@@ -4,7 +4,15 @@
 
 Freelancers rarely lose money on one big extra request. They lose it through small favors they feel awkward charging for. ScopeBill checks client requests against the agreement and keeps a running total of unbilled work. It prepares a polite change order, then lets the client **pay for it, swap something out, or leave it for later**. PayPal handles the payment, and a person approves every step.
 
-Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). It runs only in the PayPal sandbox, so no real money moves.
+Why it's needed: in [Ignition's 2025 survey of 273 US agency leaders](https://www.ignitionapp.com/news/2025-agency-pricing-cashflow-report), only 1% said they bill for all out-of-scope work. Ignition sells billing software, and that survey covers agencies, not solo freelancers.
+
+**Status:** working end to end in the PayPal sandbox, with real sandbox payments confirmed. Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). No real money moves.
+
+## Who is it for
+
+- **Freelancers with direct clients** — designers, developers, writers, marketers and anyone else who finds work outside Upwork or Fiverr and has no platform protecting them.
+- **Small studios and agencies** running fixed-quote projects where "small favors" quietly eat the margin.
+- **Their clients, too.** They see exactly what the agreement covers, get a polite change order instead of an awkward argument, and keep a real choice: pay for the extra, swap something out, or leave it for later.
 
 ## Try it
 
@@ -12,10 +20,73 @@ Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). It 
 2. Paste a new client request and click **Check request**.
 3. Select the extras, click **Prepare change order**, then edit and approve it.
 4. Click **Open client page**, and choose pay, swap or defer for each item.
-5. Click **Pay with PayPal** and sign in as a sandbox buyer. Test buyer details are in the Devpost testing instructions.
+5. Click **Pay with PayPal** and sign in as a sandbox buyer. For the submitted demo, test buyer details are in the Devpost testing instructions.
 6. Return to the dashboard to see the payment, the updated scope and the ledger.
 
-The hosted demo uses temporary storage. It can take about a minute to wake up, and saved projects can disappear when it restarts, so start again from the sample project if a link stops working.
+## Run it
+
+You need [Bun](https://bun.sh/), a PayPal sandbox app with Invoicing enabled, and an OpenRouter key.
+
+```bash
+git clone https://github.com/rushibhosalepro/scopebill.git
+```
+
+```bash
+cd scopebill
+```
+
+```bash
+bun install
+```
+
+```bash
+cp .env.example .env
+```
+
+Fill in the required names below, then run:
+
+```bash
+bun run start
+```
+
+Open <http://localhost:3000>.
+
+## Environment
+
+| Name | Required | What it's for |
+|---|---|---|
+| `PAYPAL_BASE_URL` | Yes | Must be the PayPal sandbox address, already set in `.env.example` |
+| `PAYPAL_CLIENT_ID` | Yes | Sandbox app client ID |
+| `PAYPAL_CLIENT_SECRET` | Yes | Sandbox app secret |
+| `PAYPAL_SANDBOX_BUYER_EMAIL` | For the sample project | Sandbox buyer who receives sample invoices |
+| `OPENROUTER_API_KEY` | Yes | AI requests |
+| `OPENROUTER_MODEL` | Yes | Model name, already set in `.env.example` |
+| `PAYPAL_WEBHOOK_ID` | No | Reserved for webhooks, which the app doesn't need |
+| `PORT` | No | Server port, 3000 by default |
+| `DATABASE_PATH` | No | SQLite file path |
+
+## Stack
+
+| Layer | What's running |
+|---|---|
+| Server | Bun and TypeScript |
+| Screens | React, with AG Grid for the ledger |
+| Data | SQLite |
+| Rules | Plain code for prices, totals, approvals and payment checks |
+| AI | OpenRouter with `openai/gpt-oss-120b` |
+| Payments | PayPal Invoicing API v2, sandbox only |
+| Hosting | Docker and a Render blueprint |
+
+## Layout
+
+```text
+src/core/     Scope, pricing, approval and payment rules
+src/ai/       OpenRouter client and scope prompts
+src/paypal/   Sandbox-only PayPal client
+src/server/   API, database, sample project and static files
+web/          Freelancer and client screens
+scripts/      AI test, PayPal test and live flow check
+```
 
 ## How it works
 
@@ -29,17 +100,48 @@ The hosted demo uses temporary storage. It can take about a minute to wake up, a
 | Bill | Code and PayPal | PayPal invoice for the exact amount due |
 | Confirm | PayPal | Scope and ledger update only after PayPal reports the invoice as paid |
 
-## Safety rules
+## Why you can trust it
 
-- **The AI can't move money.** It has no payment tools, and only server code can create an invoice, after approval.
+- **People decide, the AI assists.** The freelancer confirms the scope, edits and approves every change order; the client chooses pay, swap or defer. Nothing is billed on the AI's say-so.
+- **The AI never touches money.** It has no payment tools. Only server code can create an invoice, and only after a human approval.
+- **Every label shows its proof.** Each in-scope or out-of-scope label from the AI quotes the agreement it relied on. If a quote can't be found in the agreement, the request is flagged for human review instead of being billed.
+- **Payment must be proven.** The scope and ledger change only after PayPal itself reports the invoice as paid, with the amount and transaction matching exactly.
+- **Test money only.** The app refuses to run against anything but the PayPal sandbox, enforced in code.
+- **A receipt for everything.** Every request, label, approval, choice and payment is logged in an audit trail on the freelancer's dashboard. The client page shows their change orders and payment status.
+
+**A few more rules enforced in code:**
+
 - **The AI can't set prices.** Prices come from approved time and the freelancer's rate, or a price they enter.
-- **Citations are checked.** A quote that isn't in the agreement drops the request to "needs clarifying".
-- **Client messages are data.** Instructions inside a message are ignored and flagged.
+- **Client messages are data.** Instructions inside a message can't change prices or approvals, and the app warns the freelancer when the AI spots an attempt.
 - **Approval covers the exact content.** Any later edit requires a new approval.
-- **Payment needs proof.** Status, invoice ID, amount and a transaction ID must all match. A manually marked or partial payment doesn't count.
-- **The sandbox is enforced.** The app refuses to run against any other PayPal address, and invoices can only go to sandbox test accounts.
+- **A partial or manually marked payment doesn't count.**
+- **Invoices can only go to sandbox test accounts.**
 
 ScopeBill helps with communication and billing. It isn't legal advice, and the agreement still governs.
+
+## Test results
+
+One run of 30 sample client messages across 3 different agreements, using `openai/gpt-oss-120b`. Expected answers were written before the run.
+
+| Measure | Result |
+|---|---|
+| Out-of-scope requests caught | 16 of 17, and the other went to the freelancer for review |
+| Requests correctly not marked billable | 13 of 13 in-scope or unclear requests |
+| Labels matching the expected answer | 29 of 30 |
+| Trick messages that changed a label | 0 of 2 |
+| Trick messages flagged | 1 of 2 |
+| Invented quotes caught before billing | 1 of 1 |
+| Cost | About $0.003 |
+
+The miss was "Can you design some Instagram post templates to match?". The AI's quote wasn't in the agreement, so the request dropped to "needs clarifying".
+
+This is an internal test written by the author, from a single run. It isn't proof of real-world accuracy.
+
+| Command | Purpose |
+|---|---|
+| `bun test` | Run the automated tests |
+| `bun run typecheck` | Check types |
+| `bun run ai:eval` | Run the AI test using your OpenRouter credits |
 
 ## PayPal integration
 
@@ -59,53 +161,11 @@ Webhooks aren't required, because the app reads invoice status directly.
 
 Any OpenRouter model with structured output support can be set using `OPENROUTER_MODEL`.
 
-## Test results
-
-**AI test:** one run of 30 sample client messages across 3 different agreements, using `openai/gpt-oss-120b`. Expected answers were written before the run.
-
-| Measure | Result |
-|---|---|
-| Labels matching the expected answer | 29 of 30 |
-| Requests wrongly billed because of an invented quote | 0 |
-| Trick messages that changed a label | 0 of 2 |
-| Trick messages flagged | 1 of 2 |
-| Cost | About $0.003 |
-
-The miss was "Can you design some Instagram post templates to match?". The AI's quote wasn't in the agreement, so the request dropped to "needs clarifying" for the freelancer to review.
-
-This is an internal test written by the author, from a single run. It isn't proof of real-world accuracy.
-
-**Other checks:** run `bun test` for the automated tests. Real sandbox payments have also been completed and confirmed through this flow.
-
-## Run it locally
-
-You need [Bun](https://bun.sh/), a PayPal sandbox app with Invoicing enabled, and an OpenRouter key.
-
-```bash
-bun install
-```
-
-```bash
-cp .env.example .env
-```
-
-Fill in `.env`, then run:
-
-```bash
-bun run start
-```
-
-Open <http://localhost:3000>.
-
-| Command | Purpose |
-|---|---|
-| `bun test` | Run the automated tests |
-| `bun run typecheck` | Check types |
-| `bun run ai:eval` | Run the AI test using your OpenRouter credits |
-
 ## Deploy to Render
 
 This repo includes a [Dockerfile](Dockerfile) and a [render.yaml](render.yaml) blueprint. In Render, create a new Blueprint from your repo, then enter the values it asks for: `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_SANDBOX_BUYER_EMAIL` and `OPENROUTER_API_KEY`.
+
+The free plan uses temporary storage. It can take about a minute to wake up, and saved projects can disappear when it restarts, so start again from the sample project if a link stops working.
 
 ## Limits
 
