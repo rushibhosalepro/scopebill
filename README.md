@@ -6,6 +6,8 @@ Freelancers rarely lose money on one big extra request. They lose it through sma
 
 Why it's needed: in [Ignition's 2025 survey of 273 US agency leaders](https://www.ignitionapp.com/news/2025-agency-pricing-cashflow-report), only 1% said they bill for all out-of-scope work. Ignition sells billing software, and that survey covers agencies, not solo freelancers.
 
+**Live demo:** <https://scopebill.onrender.com> (can take about a minute to wake up)
+
 **Status:** working end to end in the PayPal sandbox, with real sandbox payments confirmed. Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). No real money moves.
 
 ## Who is it for
