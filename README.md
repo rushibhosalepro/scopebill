@@ -8,7 +8,21 @@ Why it's needed: in [Ignition's 2025 survey of 273 US agency leaders](https://ww
 
 **Live demo:** <https://scopebill.onrender.com> (can take about a minute to wake up)
 
+**Demo video:** <https://youtu.be/lvx9rxPvGVM>
+
 **Status:** working end to end in the PayPal sandbox, with real sandbox payments confirmed. Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). No real money moves.
+
+## Screenshots
+
+| Small favors add up | A trick message doesn't work |
+|---|---|
+| ![Dashboard showing $825 of unbilled work](docs/screenshots/01-running-total.png) | ![A trick message stays out of scope, with a warning](docs/screenshots/02-trick-message-blocked.png) |
+
+| The client gets a choice | Every charge is tracked |
+|---|---|
+| ![Client page with pay, swap and later choices](docs/screenshots/04-client-choices.png) | ![Ledger with quoted and charged amounts, and the audit trail](docs/screenshots/07-ledger-and-audit-trail.png) |
+
+Screenshots show sample data in the PayPal sandbox.
 
 ## Who is it for
 
