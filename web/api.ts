@@ -35,6 +35,7 @@ export interface StoredOrder {
   createdAt: string;
   invoiceStatus?: string;
   payerViewUrl?: string;
+  lastReminderAt?: string;
   order: {
     id: string;
     currency: string;

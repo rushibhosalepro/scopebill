@@ -6,8 +6,15 @@ import { createStaticHandler } from "./static";
 import { Store } from "./store";
 
 const store = new Store(process.env.DATABASE_PATH?.trim() || "scopebill.db");
-const service = new ProjectService(store, openRouterFromEnv(), new PayPalClient(loadConfig()));
-const api = createHandler(service, undefined, undefined, process.env.PAYPAL_SANDBOX_BUYER_EMAIL?.trim());
+const paypal = new PayPalClient(loadConfig());
+const service = new ProjectService(store, openRouterFromEnv(), paypal);
+const api = createHandler(
+  service,
+  undefined,
+  undefined,
+  process.env.PAYPAL_SANDBOX_BUYER_EMAIL?.trim(),
+  paypal.webhooksEnabled ? (delivery) => paypal.verifyWebhook(delivery) : undefined,
+);
 const web = createStaticHandler("dist");
 
 const server = Bun.serve({

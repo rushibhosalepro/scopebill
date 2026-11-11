@@ -17,5 +17,7 @@ services:
         sync: false
       - key: PAYPAL_SANDBOX_BUYER_EMAIL
         sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
       - key: OPENROUTER_API_KEY
         sync: false

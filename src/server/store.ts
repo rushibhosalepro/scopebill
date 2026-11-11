@@ -33,6 +33,7 @@ export interface StoredOrder {
   createdAt: string;
   invoiceStatus?: string;
   payerViewUrl?: string;
+  lastReminderAt?: string;
   order: ChangeOrder;
 }
 
@@ -142,6 +143,14 @@ export class Store {
 
   listOrders(projectId: string): StoredOrder[] {
     return this.list<StoredOrder>("orders", projectId);
+  }
+
+  findOrderByInvoiceId(invoiceId: string): StoredOrder | null {
+    return parse<StoredOrder>(
+      this.db
+        .query<Row, [string]>("SELECT data FROM orders WHERE json_extract(data, '$.order.invoiceId') = ? LIMIT 1")
+        .get(invoiceId),
+    );
   }
 
   deleteOrder(projectId: string, id: string): void {

@@ -77,7 +77,7 @@ Open <http://localhost:3000>.
 | `PAYPAL_SANDBOX_BUYER_EMAIL` | For the sample project | Sandbox buyer who receives sample invoices |
 | `OPENROUTER_API_KEY` | Yes | AI requests |
 | `OPENROUTER_MODEL` | Yes | Model name, already set in `.env.example` |
-| `PAYPAL_WEBHOOK_ID` | No | Reserved for webhooks, which the app doesn't need |
+| `PAYPAL_WEBHOOK_ID` | No | Turns on the PayPal webhook, so payments are recorded even when nobody has the page open |
 | `PORT` | No | Server port, 3000 by default |
 | `DATABASE_PATH` | No | SQLite file path |
 
@@ -86,7 +86,7 @@ Open <http://localhost:3000>.
 | Layer | What's running |
 |---|---|
 | Server | Bun and TypeScript |
-| Screens | React, with AG Grid for the ledger |
+| Screens | React, with AG Grid for the request table, the ledger and the audit trail |
 | Data | SQLite |
 | Rules | Plain code for prices, totals, approvals and payment checks |
 | AI | OpenRouter with `openai/gpt-oss-120b` |
@@ -164,10 +164,24 @@ This is an internal test written by the author, from a single run. It isn't proo
 | Feature | Use |
 |---|---|
 | Invoicing API v2 | Generate a number, create, send and read invoices |
+| Invoice reminders | The freelancer can have PayPal email the client about an unpaid invoice, at most once an hour |
+| Invoice cancellation | Withdrawing an unpaid change order cancels its PayPal invoice, so the client can choose again |
+| Webhooks | `INVOICING.INVOICE.PAID` records the payment even when nobody has the page open |
+| Webhook signature check | Every webhook is verified with PayPal before the app acts on it |
 | Status checks | Confirm payment by reading the invoice from PayPal |
 | OAuth 2.0 | Server-side sandbox authentication |
 
-Webhooks aren't required, because the app reads invoice status directly.
+A webhook is only a nudge. The app still reads the invoice back from PayPal and checks the status, amount and transaction before it marks anything paid, so a forged webhook can't mark an invoice paid.
+
+Webhooks are optional. To turn them on, add a webhook in your PayPal sandbox app that points to `https://<your-host>/api/paypal/webhook`, subscribe it to the invoicing events, and set `PAYPAL_WEBHOOK_ID` to the ID PayPal gives you. Without it, the pages check the invoice status every few seconds while they're open.
+
+## AG Grid
+
+| Grid | What it's for |
+|---|---|
+| Request table | Work through many client requests at once: edit the label and time in place, filter, and tick the extras to bill. It shares its selection with the card view. |
+| Project ledger | Every extra with its quoted and charged amount, client choice, status, PayPal invoice and payment ID. Totals stay pinned, and it can be searched and exported as CSV. |
+| Audit trail | Every action by the freelancer, client, AI and PayPal. Filter by who did it, and export it as CSV. |
 
 ## AI tools
 
@@ -179,7 +193,7 @@ Any OpenRouter model with structured output support can be set using `OPENROUTER
 
 ## Deploy to Render
 
-This repo includes a [Dockerfile](Dockerfile) and a [render.yaml](render.yaml) blueprint. In Render, create a new Blueprint from your repo, then enter the values it asks for: `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_SANDBOX_BUYER_EMAIL` and `OPENROUTER_API_KEY`.
+This repo includes a [Dockerfile](Dockerfile) and a [render.yaml](render.yaml) blueprint. In Render, create a new Blueprint from your repo, then enter the values it asks for: `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_SANDBOX_BUYER_EMAIL` and `OPENROUTER_API_KEY`. `PAYPAL_WEBHOOK_ID` is optional.
 
 The free plan uses temporary storage. It can take about a minute to wake up, and saved projects can disappear when it restarts, so start again from the sample project if a link stops working.
 

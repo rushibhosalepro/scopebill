@@ -4,6 +4,18 @@ export interface PayPalConfig {
   baseUrl: string;
   clientId: string;
   clientSecret: string;
+  webhookId?: string;
+}
+
+export interface InvoiceNotice {
+  subject: string;
+  note: string;
+}
+
+/** The PayPal-* headers and the unmodified body of an incoming webhook call. */
+export interface WebhookDelivery {
+  headers: Headers;
+  rawBody: string;
 }
 
 export interface InvoiceLine {
@@ -53,7 +65,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (baseUrl !== SANDBOX_BASE_URL) {
     throw new Error(`ScopeBill only runs against the PayPal sandbox (${SANDBOX_BASE_URL})`);
   }
-  return { baseUrl, clientId, clientSecret };
+  const webhookId = env.PAYPAL_WEBHOOK_ID?.trim();
+  return { baseUrl, clientId, clientSecret, ...(webhookId ? { webhookId } : {}) };
 }
 
 export class PayPalClient {
@@ -107,6 +120,60 @@ export class PayPalClient {
     return toInvoiceState(invoice);
   }
 
+  /** Asks PayPal to email the payer a reminder about a sent, unpaid invoice. */
+  async remindInvoice(invoiceId: string, notice: InvoiceNotice): Promise<void> {
+    await this.request("POST", `/v2/invoicing/invoices/${encodeURIComponent(invoiceId)}/remind`, {
+      subject: notice.subject,
+      note: notice.note,
+      send_to_recipient: true,
+      send_to_invoicer: false,
+    });
+  }
+
+  /** Cancels a sent invoice so it can no longer be paid, and tells the payer. */
+  async cancelInvoice(invoiceId: string, notice: InvoiceNotice): Promise<void> {
+    await this.request("POST", `/v2/invoicing/invoices/${encodeURIComponent(invoiceId)}/cancel`, {
+      subject: notice.subject,
+      note: notice.note,
+      send_to_recipient: true,
+      send_to_invoicer: false,
+    });
+  }
+
+  get webhooksEnabled(): boolean {
+    return Boolean(this.config.webhookId);
+  }
+
+  /**
+   * Asks PayPal whether a webhook call really came from PayPal for our webhook.
+   * The event is spliced in as the raw text we received, because re-serializing
+   * the JSON can change it enough to fail verification.
+   */
+  async verifyWebhook(delivery: WebhookDelivery): Promise<boolean> {
+    const webhookId = this.config.webhookId;
+    if (!webhookId) return false;
+
+    const header = (name: string) => delivery.headers.get(name);
+    const fields = {
+      auth_algo: header("paypal-auth-algo"),
+      cert_url: header("paypal-cert-url"),
+      transmission_id: header("paypal-transmission-id"),
+      transmission_sig: header("paypal-transmission-sig"),
+      transmission_time: header("paypal-transmission-time"),
+      webhook_id: webhookId,
+    };
+    if (Object.values(fields).some((value) => !value)) return false;
+    if (safeJson(delivery.rawBody) === delivery.rawBody) return false;
+
+    const body = `${JSON.stringify(fields).slice(0, -1)},"webhook_event":${delivery.rawBody}}`;
+    const result = await this.request<{ verification_status?: string }>(
+      "POST",
+      "/v1/notifications/verify-webhook-signature",
+      new RawJson(body),
+    );
+    return result?.verification_status === "SUCCESS";
+  }
+
   private async accessToken(): Promise<string> {
     if (this.token && Date.now() < this.token.expiresAt) return this.token.value;
 
@@ -154,7 +221,7 @@ export class PayPalClient {
         "Content-Type": "application/json",
         ...headers,
       },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(body === undefined ? {} : { body: body instanceof RawJson ? body.text : JSON.stringify(body) }),
     });
 
     const text = await response.text();
@@ -171,6 +238,11 @@ export class PayPalClient {
     }
     return data as T;
   }
+}
+
+/** A request body that is already JSON text and must be sent as is. */
+class RawJson {
+  constructor(readonly text: string) {}
 }
 
 interface RawInvoice {

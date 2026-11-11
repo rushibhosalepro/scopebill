@@ -156,7 +156,24 @@ blockquote { margin: 0.4rem 0; padding-left: 0.7rem; border-left: 3px solid var(
 .order-actions p { margin: 0; }
 .client-note { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--paper); border-radius: 8px; padding: 0.8rem 0.9rem; }
 
-.ledger { --ag-font-family: inherit; --ag-font-size: 13px; width: 100%; }
+.ledger { width: 100%; }
+.grid-box { --ag-font-family: inherit; --ag-font-size: 13px; width: 100%; }
+.grid-box .total-row { font-weight: 650; background: var(--paper); }
+.grid-box .pill, .grid-box .status { line-height: 1.5; }
+.request-grid { margin-top: 1rem; }
+.request-grid > p { margin: 0.5rem 0 0; }
+.grid-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; margin-bottom: 0.7rem; }
+.grid-head .section-title { margin: 0; }
+.grid-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.grid-tools input[type="search"] { width: 13rem; margin: 0; }
+.audit-tools { justify-content: space-between; margin: 0.8rem 0 0.6rem; }
+.card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; margin-bottom: 0.9rem; }
+.card-head h2 { margin: 0; }
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.segmented button { border: 0; border-radius: 0; background: var(--surface); color: var(--muted); padding: 0.25rem 0.8rem; font-size: 0.85rem; }
+.segmented button.on { background: var(--accent-soft); color: var(--accent-dark); font-weight: 650; }
+.progress { min-height: 1.3em; margin: 0; }
+.order-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 
 .timeline summary, details > summary { cursor: pointer; font-weight: 650; }
 .timeline ol { list-style: none; margin: 0.8rem 0 0; padding: 0; }

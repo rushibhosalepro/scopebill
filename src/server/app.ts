@@ -16,6 +16,9 @@ export interface AppLimits {
   aiCallsPerDay: number;
 }
 
+/** Checks that a webhook call really came from PayPal. Left out when webhooks aren't set up. */
+export type WebhookVerifier = (delivery: { headers: Headers; rawBody: string }) => Promise<boolean>;
+
 class BadRequest extends Error {}
 class Unauthorized extends Error {}
 class TooMany extends Error {}
@@ -25,6 +28,7 @@ export function createHandler(
   limits: AppLimits = { projectsPerHour: 60, aiCallsPerDay: 500 },
   log: (message: string, error?: unknown) => void = console.error,
   demoClientEmail?: string,
+  verifyWebhook?: WebhookVerifier,
 ) {
   const projectLimit = new WindowLimit(limits.projectsPerHour, 60 * 60 * 1000);
   const aiLimit = new WindowLimit(limits.aiCallsPerDay, 24 * 60 * 60 * 1000);
@@ -36,6 +40,34 @@ export function createHandler(
 
     if (method === "GET" && pathname === "/api/health") return json({ ok: true });
     if (parts[0] !== "api") throw new NotFound("Not found");
+
+    if (method === "POST" && pathname === "/api/paypal/webhook") {
+      if (!verifyWebhook) throw new NotFound("Not found");
+      const rawBody = await request.text();
+      let verified = false;
+      try {
+        verified = await verifyWebhook({ headers: request.headers, rawBody });
+      } catch (error) {
+        // A 5xx makes PayPal retry later, which is what we want if the check itself failed.
+        throw new UpstreamError("The webhook couldn't be verified right now", error);
+      }
+      if (!verified) throw new Unauthorized();
+
+      let event: { event_type?: unknown; resource?: { id?: unknown; invoice?: { id?: unknown } } } | null;
+      try {
+        event = JSON.parse(rawBody);
+      } catch {
+        throw new BadRequest("Send a valid JSON body");
+      }
+      if (typeof event !== "object" || event === null) throw new BadRequest("Send a JSON object");
+      const eventType = typeof event.event_type === "string" ? event.event_type : "";
+      const invoiceId = event.resource?.invoice?.id ?? event.resource?.id;
+      const handled =
+        eventType.startsWith("INVOICING.INVOICE.") && typeof invoiceId === "string"
+          ? await service.handleInvoiceWebhook(eventType, invoiceId)
+          : false;
+      return json({ received: true, handled });
+    }
 
     if (method === "POST" && pathname === "/api/demo") {
       if (!demoClientEmail) throw new RuleError("The sample project isn't set up on this server");
@@ -111,6 +143,12 @@ export function createHandler(
         }
         if (orderId && method === "POST" && parts[5] === "refresh" && parts.length === 6) {
           return json(await service.refreshPayment(projectId, orderId));
+        }
+        if (orderId && method === "POST" && parts[5] === "remind" && parts.length === 6) {
+          return json(await service.sendReminder(projectId, orderId));
+        }
+        if (orderId && method === "POST" && parts[5] === "withdraw" && parts.length === 6) {
+          return json(await service.withdrawOrder(projectId, orderId));
         }
       }
     }

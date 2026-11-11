@@ -59,6 +59,15 @@ class FakePayments implements Payments {
   async getInvoice(invoiceId: string): Promise<InvoiceState> {
     return { ...this.invoices.get(invoiceId)! };
   }
+  reminded: string[] = [];
+  cancelled: string[] = [];
+  async remindInvoice(invoiceId: string): Promise<void> {
+    this.reminded.push(invoiceId);
+  }
+  async cancelInvoice(invoiceId: string): Promise<void> {
+    this.cancelled.push(invoiceId);
+    this.invoices.get(invoiceId)!.status = "CANCELLED";
+  }
   pay(invoiceId: string, status = "PAID"): void {
     const invoice = this.invoices.get(invoiceId)!;
     Object.assign(invoice, { status, paidAmount: invoice.total, transactionIds: ["TX1"] });
@@ -68,13 +77,24 @@ class FakePayments implements Payments {
 let model: FakeModel;
 let payments: FakePayments;
 let handler: (request: Request) => Promise<Response>;
+let webhookHandler: (request: Request) => Promise<Response>;
+let webhookGenuine: boolean;
 
 beforeEach(() => {
   model = new FakeModel();
   payments = new FakePayments();
+  webhookGenuine = true;
   const service = new ProjectService(new Store(), model, payments, () => {});
   handler = createHandler(service, { projectsPerHour: 3, aiCallsPerDay: 100 }, () => {});
+  webhookHandler = createHandler(service, undefined, () => {}, undefined, async () => webhookGenuine);
 });
+
+const webhook = async (event: unknown, target = webhookHandler) => {
+  const response = await target(
+    new Request("http://test/api/paypal/webhook", { method: "POST", body: JSON.stringify(event) }),
+  );
+  return { status: response.status, body: (await response.json()) as any };
+};
 
 const call = async (method: string, path: string, body?: unknown, token?: string) => {
   const response = await handler(
@@ -397,6 +417,96 @@ describe("payment", () => {
     const retried = await call("POST", `/api/client/${s.client}/orders/${s.orderId}/invoice`);
     expect(retried.body.orders[0].invoiceStatus).toBe("SENT");
     expect(payments.created[0]?.requestId).toBe(`create-${s.orderId}`);
+  });
+
+  test("a verified PayPal webhook confirms payment with nobody on the page", async () => {
+    const s = await awaitingPayment();
+    await call("POST", `/api/client/${s.client}/orders/${s.orderId}/invoice`);
+    payments.pay("INV-1");
+
+    const result = await webhook({ event_type: "INVOICING.INVOICE.PAID", resource: { invoice: { id: "INV-1" } } });
+    expect(result.status).toBe(200);
+    expect(result.body.handled).toBe(true);
+
+    const view = (await call("GET", `/api/projects/${s.id}`, undefined, s.token)).body;
+    expect(view.summary.paidCents).toBe(20_000);
+    expect(view.events.map((e: { type: string }) => e.type)).toContain("webhook_received");
+  });
+
+  test("a webhook alone can't mark an invoice paid", async () => {
+    const s = await awaitingPayment();
+    await call("POST", `/api/client/${s.client}/orders/${s.orderId}/invoice`);
+
+    const result = await webhook({ event_type: "INVOICING.INVOICE.PAID", resource: { invoice: { id: "INV-1" } } });
+    expect(result.status).toBe(200);
+    const view = (await call("GET", `/api/projects/${s.id}`, undefined, s.token)).body;
+    expect(view.summary.paidCents).toBe(0);
+  });
+
+  test("an unverified webhook is refused and changes nothing", async () => {
+    const s = await awaitingPayment();
+    await call("POST", `/api/client/${s.client}/orders/${s.orderId}/invoice`);
+    payments.pay("INV-1");
+    webhookGenuine = false;
+
+    const result = await webhook({ event_type: "INVOICING.INVOICE.PAID", resource: { invoice: { id: "INV-1" } } });
+    expect(result.status).toBe(401);
+    const view = (await call("GET", `/api/projects/${s.id}`, undefined, s.token)).body;
+    expect(view.summary.paidCents).toBe(0);
+  });
+
+  test("webhooks are off unless a webhook ID is set, and unknown invoices are ignored", async () => {
+    expect((await webhook({ event_type: "INVOICING.INVOICE.PAID" }, handler)).status).toBe(404);
+    const unknown = await webhook({ event_type: "INVOICING.INVOICE.PAID", resource: { id: "INV-404" } });
+    expect(unknown.body).toEqual({ received: true, handled: false });
+  });
+
+  test("a reminder goes through PayPal, at most once an hour", async () => {
+    const s = await awaitingPayment();
+    const early = await call("POST", `/api/projects/${s.id}/orders/${s.orderId}/remind`, undefined, s.token);
+    expect(early.status).toBe(409);
+
+    await call("POST", `/api/client/${s.client}/orders/${s.orderId}/invoice`);
+    const sent = await call("POST", `/api/projects/${s.id}/orders/${s.orderId}/remind`, undefined, s.token);
+    expect(sent.status).toBe(200);
+    expect(payments.reminded).toEqual(["INV-1"]);
+
+    const again = await call("POST", `/api/projects/${s.id}/orders/${s.orderId}/remind`, undefined, s.token);
+    expect(again.status).toBe(409);
+    expect(payments.reminded).toHaveLength(1);
+  });
+
+  test("withdrawing cancels the PayPal invoice and frees the request", async () => {
+    const s = await awaitingPayment();
+    await call("POST", `/api/client/${s.client}/orders/${s.orderId}/invoice`);
+
+    const result = await call("POST", `/api/projects/${s.id}/orders/${s.orderId}/withdraw`, undefined, s.token);
+    expect(result.status).toBe(200);
+    expect(payments.cancelled).toEqual(["INV-1"]);
+
+    const view = (await call("GET", `/api/projects/${s.id}`, undefined, s.token)).body;
+    expect(view.orders).toHaveLength(0);
+    expect(view.requests[0].billedInOrderId).toBeUndefined();
+    expect(view.summary.unbilled.amountCents).toBe(20_000);
+    expect(view.project.scope).toHaveLength(2);
+  });
+
+  test("a paid invoice can't be withdrawn, and the payment is recorded", async () => {
+    const s = await awaitingPayment();
+    await call("POST", `/api/client/${s.client}/orders/${s.orderId}/invoice`);
+    payments.pay("INV-1");
+
+    const result = await call("POST", `/api/projects/${s.id}/orders/${s.orderId}/withdraw`, undefined, s.token);
+    expect(result.status).toBe(409);
+    expect(payments.cancelled).toHaveLength(0);
+    const view = (await call("GET", `/api/projects/${s.id}`, undefined, s.token)).body;
+    expect(view.summary.paidCents).toBe(20_000);
+  });
+
+  test("only the freelancer can remind or withdraw", async () => {
+    const s = await awaitingPayment();
+    expect((await call("POST", `/api/projects/${s.id}/orders/${s.orderId}/withdraw`)).status).toBe(401);
+    expect((await call("POST", `/api/projects/${s.id}/orders/${s.orderId}/remind`)).status).toBe(401);
   });
 });
 

@@ -1,6 +1,12 @@
-import { AllCommunityModule, ModuleRegistry, type ColDef } from "ag-grid-community";
+import {
+  AllCommunityModule,
+  ModuleRegistry,
+  type ColDef,
+  type GridApi,
+  type ProcessCellForExportParams,
+} from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   api,
   duration,
@@ -38,6 +44,42 @@ const EVENT_TEXT: Record<string, string> = {
   invoice_sent: "PayPal invoice sent",
   payment_confirmed: "PayPal confirmed payment",
   scope_updated: "Project scope updated",
+  webhook_received: "PayPal sent a webhook",
+  reminder_sent: "PayPal reminder sent to the client",
+  invoice_cancelled: "PayPal invoice cancelled",
+  change_order_withdrawn: "Change order withdrawn",
+};
+
+const ACTORS: Record<string, string> = {
+  freelancer: "Freelancer",
+  client: "Client",
+  ai: "AI",
+  paypal: "PayPal",
+  system: "ScopeBill",
+};
+
+const CHECK_STEPS = [
+  "Reading the request against your agreement...",
+  "Looking for the clause that covers it...",
+  "Estimating the time it would take...",
+];
+
+/** Cycles through progress messages while a slow step runs, so the wait never looks frozen. */
+function useProgress(active: boolean, steps: string[]): string | null {
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    setIndex(0);
+    const timer = setInterval(() => setIndex((i) => Math.min(i + 1, steps.length - 1)), 3500);
+    return () => clearInterval(timer);
+  }, [active, steps]);
+  return active ? (steps[index] ?? null) : null;
+}
+
+/** Exports what the grid shows (formatted money and times), not the raw cents. */
+const exportCell = (params: ProcessCellForExportParams): string => {
+  const shown = params.formatValue(params.value);
+  return shown ?? String(params.value ?? "");
 };
 
 interface Props {
@@ -211,36 +253,52 @@ interface SectionProps {
 
 function Requests({ view, base, token, run }: SectionProps) {
   const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [working, setWorking] = useState<"check" | "order" | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [layout, setLayout] = useState<"cards" | "table">("cards");
+  const busy = working !== null;
+  const progress = useProgress(working === "check", CHECK_STEPS);
 
   const add = async (event: FormEvent) => {
     event.preventDefault();
     if (!text.trim()) return;
-    setBusy(true);
+    setWorking("check");
     await run(async () => {
       await api("POST", `${base}/requests`, { token, body: { text } });
       setText("");
     });
-    setBusy(false);
+    setWorking(null);
   };
+
+  const review = (id: string, changes: { label?: Label; minutes?: number }) =>
+    run(() => api("PATCH", `${base}/requests/${id}`, { token, body: changes }));
 
   const billable = view.requests.filter((r) => r.label === "out_of_scope" && !r.billedInOrderId && r.minutes > 0);
   const chosen = billable.filter((r) => selected.has(r.id));
   const chosenMinutes = chosen.reduce((sum, r) => sum + r.minutes, 0);
 
   const prepare = async () => {
-    setBusy(true);
+    setWorking("order");
     await run(async () => {
       await api("POST", `${base}/orders`, { token, body: { requestIds: chosen.map((r) => r.id) } });
       setSelected(new Set());
     });
-    setBusy(false);
+    setWorking(null);
   };
 
   return (
     <section className="card">
-      <h2>Client requests</h2>
+      <div className="card-head">
+        <h2>Client requests</h2>
+        <div className="segmented" role="group" aria-label="How to show requests">
+          <button className={layout === "cards" ? "on" : ""} aria-pressed={layout === "cards"} onClick={() => setLayout("cards")}>
+            Cards
+          </button>
+          <button className={layout === "table" ? "on" : ""} aria-pressed={layout === "table"} onClick={() => setLayout("table")}>
+            Table
+          </button>
+        </div>
+      </div>
       <form className="add-request" onSubmit={add}>
         <label htmlFor="new-request">Paste what the client asked</label>
         <textarea
@@ -252,28 +310,33 @@ function Requests({ view, base, token, run }: SectionProps) {
           placeholder="Can you just add..."
         />
         <button className="primary" disabled={busy || !text.trim()}>
-          {busy ? "Working..." : "Check request"}
+          {working === "check" ? "Checking..." : "Check request"}
         </button>
+        <p className="muted small progress" role="status" aria-live="polite">
+          {progress}
+        </p>
       </form>
 
-      <ul className="request-list">
-        {[...view.requests].reverse().map((request) => (
-          <RequestRow
-            key={`${request.id}-${request.minutes}-${request.label}`}
-            request={request}
-            selected={selected.has(request.id)}
-            onToggle={(on) => {
-              const next = new Set(selected);
-              if (on) next.add(request.id);
-              else next.delete(request.id);
-              setSelected(next);
-            }}
-            onChange={(changes) =>
-              run(() => api("PATCH", `${base}/requests/${request.id}`, { token, body: changes }))
-            }
-          />
-        ))}
-      </ul>
+      {layout === "table" ? (
+        <RequestGrid requests={view.requests} selected={selected} onSelect={setSelected} onChange={review} />
+      ) : (
+        <ul className="request-list">
+          {[...view.requests].reverse().map((request) => (
+            <RequestRow
+              key={`${request.id}-${request.minutes}-${request.label}`}
+              request={request}
+              selected={selected.has(request.id)}
+              onToggle={(on) => {
+                const next = new Set(selected);
+                if (on) next.add(request.id);
+                else next.delete(request.id);
+                setSelected(next);
+              }}
+              onChange={(changes) => review(request.id, changes)}
+            />
+          ))}
+        </ul>
+      )}
 
       {billable.length > 0 && (
         <div className="prepare-bar">
@@ -287,11 +350,143 @@ function Requests({ view, base, token, run }: SectionProps) {
             {chosen.length === billable.length ? "Clear" : "Select all"}
           </button>
           <button className="primary" disabled={busy || chosen.length === 0} onClick={prepare}>
-            {busy ? "Working..." : "Prepare change order"}
+            {working === "order" ? "Drafting a polite note..." : "Prepare change order"}
           </button>
         </div>
       )}
     </section>
+  );
+}
+
+const canBill = (request: RequestItem): boolean =>
+  request.label === "out_of_scope" && !request.billedInOrderId && request.minutes > 0;
+
+/**
+ * The same requests as the cards, as an AG Grid for working through many at
+ * once: edit the label and time in place, filter, and tick rows to bill.
+ */
+function RequestGrid({
+  requests,
+  selected,
+  onSelect,
+  onChange,
+}: {
+  requests: RequestItem[];
+  selected: Set<string>;
+  onSelect: (ids: Set<string>) => void;
+  onChange: (id: string, changes: { label?: Label; minutes?: number }) => void;
+}) {
+  const rows = useMemo(() => [...requests].reverse(), [requests]);
+  const apiRef = useRef<GridApi<RequestItem> | null>(null);
+  const syncing = useRef(false);
+
+  // Keep the grid's ticks in step with the selection shared with the card view.
+  const syncSelection = useCallback(() => {
+    const grid = apiRef.current;
+    if (!grid) return;
+    syncing.current = true;
+    grid.forEachNode((node) => {
+      const want = Boolean(node.data && selected.has(node.data.id) && canBill(node.data));
+      if (node.isSelected() !== want) node.setSelected(want);
+    });
+    syncing.current = false;
+  }, [selected]);
+
+  useEffect(syncSelection, [syncSelection, rows]);
+
+  const columns = useMemo<ColDef<RequestItem>[]>(
+    () => [
+      {
+        field: "text",
+        headerName: "Client request",
+        flex: 3,
+        minWidth: 240,
+        wrapText: true,
+        autoHeight: true,
+        tooltipField: "reason",
+      },
+      {
+        field: "label",
+        headerName: "Label",
+        width: 165,
+        refData: LABELS,
+        editable: (p) => !p.data?.billedInOrderId,
+        cellEditor: "agSelectCellEditor",
+        cellEditorParams: { values: Object.keys(LABELS) },
+        cellRenderer: (p: { value: Label }) => <span className={`pill ${p.value}`}>{LABELS[p.value]}</span>,
+      },
+      {
+        field: "minutes",
+        headerName: "Time",
+        width: 110,
+        type: "rightAligned",
+        editable: (p) => p.data?.label === "out_of_scope" && !p.data.billedInOrderId,
+        cellEditor: "agNumberCellEditor",
+        cellEditorParams: { min: 0, max: 2400, precision: 0 },
+        valueFormatter: (p) => (p.data?.label === "out_of_scope" ? duration(p.value ?? 0) : "-"),
+      },
+      {
+        colId: "state",
+        headerName: "Status",
+        width: 190,
+        valueGetter: (p) => {
+          const r = p.data;
+          if (!r) return "";
+          if (r.billedInOrderId) return "In a change order";
+          if (r.injectionSuspected) return "Trick message ignored";
+          if (r.downgraded) return "Citation not found, review";
+          if (r.label === "out_of_scope") return r.reviewed ? "Ready to bill" : "AI estimate, review";
+          return r.label === "in_scope" ? "Covered by the agreement" : "Ask the client";
+        },
+      },
+      {
+        colId: "clause",
+        headerName: "Clause relied on",
+        flex: 2,
+        minWidth: 200,
+        valueGetter: (p) => p.data?.citedQuotes.join(" | ") ?? "",
+        tooltipValueGetter: (p) => p.value,
+      },
+    ],
+    [],
+  );
+
+  return (
+    <div className="grid-box request-grid">
+      <AgGridReact<RequestItem>
+        rowData={rows}
+        columnDefs={columns}
+        domLayout="autoHeight"
+        getRowId={(p) => p.data.id}
+        defaultColDef={{ sortable: true, filter: true, resizable: true }}
+        rowSelection={{
+          mode: "multiRow",
+          isRowSelectable: (node) => Boolean(node.data && canBill(node.data)),
+          hideDisabledCheckboxes: true,
+          enableClickSelection: false,
+        }}
+        singleClickEdit
+        stopEditingWhenCellsLoseFocus
+        tooltipShowDelay={300}
+        onGridReady={(event) => {
+          apiRef.current = event.api;
+          syncSelection();
+        }}
+        onSelectionChanged={(event) => {
+          if (syncing.current) return;
+          onSelect(new Set(event.api.getSelectedRows().map((r) => r.id)));
+        }}
+        onCellValueChanged={(event) => {
+          if (event.newValue === event.oldValue) return;
+          if (event.colDef.field === "label") onChange(event.data.id, { label: event.newValue as Label });
+          if (event.colDef.field === "minutes") {
+            const minutes = Math.round(Number(event.newValue) || 0);
+            if (minutes >= 0 && minutes <= 2400) onChange(event.data.id, { minutes });
+          }
+        }}
+      />
+      <p className="muted small">Click a label or time to change it. Tick the extras you want to bill.</p>
+    </div>
   );
 }
 
@@ -538,6 +733,35 @@ function OrderCard({
           </button>
         </div>
       )}
+
+      {order.status === "awaiting_payment" && (
+        <div className="order-actions">
+          <p className="muted small">
+            {stored.lastReminderAt
+              ? `PayPal reminder sent ${new Date(stored.lastReminderAt).toLocaleString()}.`
+              : order.invoiceId
+                ? "Your client has a PayPal invoice. This updates by itself when they pay."
+                : "Your client hasn't opened the PayPal invoice yet."}
+          </p>
+          <div className="order-buttons">
+            {order.invoiceId && (
+              <button className="plain" onClick={() => run(() => api("POST", `${base}/remind`, { token }))}>
+                Send PayPal reminder
+              </button>
+            )}
+            <button
+              className="plain danger"
+              onClick={() => {
+                if (window.confirm("Cancel the PayPal invoice and let your client choose again?")) {
+                  void run(() => api("POST", `${base}/withdraw`, { token }));
+                }
+              }}
+            >
+              Withdraw
+            </button>
+          </div>
+        </div>
+      )}
     </article>
   );
 }
@@ -566,6 +790,12 @@ function Ledger({ orders }: { orders: StoredOrder[] }) {
           choice: stored.order.choices?.[line.requestId]?.type ?? null,
           status:
             stored.order.choices?.[line.requestId]?.type === "defer" ? "Not charged" : statusText(stored),
+          tone:
+            stored.order.choices?.[line.requestId]?.type === "defer"
+              ? ""
+              : stored.order.status === "complete" || stored.order.status === "awaiting_payment"
+                ? stored.order.status
+                : "",
           invoice: stored.order.invoiceId ?? "",
           payment: stored.order.paymentTransactionId ?? "",
         })),
@@ -573,7 +803,30 @@ function Ledger({ orders }: { orders: StoredOrder[] }) {
     [orders],
   );
 
-  const columns = useMemo<ColDef<(typeof rows)[number]>[]>(
+  type Row = (typeof rows)[number];
+  const [search, setSearch] = useState("");
+  const apiRef = useRef<GridApi<Row> | null>(null);
+
+  // A pinned row keeps the totals in view however the ledger is sorted or filtered.
+  const totals = useMemo<Row[]>(
+    () => [
+      {
+        id: "total",
+        item: "Total",
+        time: rows.reduce((sum, r) => sum + r.time, 0),
+        amount: rows.reduce((sum, r) => sum + r.amount, 0),
+        charged: rows.reduce((sum, r) => sum + (r.charged ?? 0), 0),
+        choice: null,
+        status: "",
+        tone: "",
+        invoice: "",
+        payment: "",
+      },
+    ],
+    [rows],
+  );
+
+  const columns = useMemo<ColDef<Row>[]>(
     () => [
       { field: "item", headerName: "Item", flex: 2, minWidth: 220 },
       { field: "time", headerName: "Time", width: 95, valueFormatter: (p) => duration(p.value ?? 0) },
@@ -589,9 +842,15 @@ function Ledger({ orders }: { orders: StoredOrder[] }) {
         field: "choice",
         headerName: "Client choice",
         width: 150,
-        valueFormatter: (p) => (p.value ? choiceText(p.value) : "No answer yet"),
+        valueFormatter: (p) => (p.node?.rowPinned ? "" : p.value ? choiceText(p.value) : "No answer yet"),
       },
-      { field: "status", headerName: "Status", width: 190 },
+      {
+        field: "status",
+        headerName: "Status",
+        width: 200,
+        cellRenderer: (p: { value: string; data?: Row }) =>
+          p.value ? <span className={`status ${p.data?.tone ?? ""}`}>{p.value}</span> : null,
+      },
       { field: "invoice", headerName: "PayPal invoice", width: 225 },
       { field: "payment", headerName: "PayPal payment", width: 190 },
     ],
@@ -601,34 +860,129 @@ function Ledger({ orders }: { orders: StoredOrder[] }) {
   if (rows.length === 0) return null;
   return (
     <section>
-      <h2 className="section-title">Project ledger</h2>
-      <div className="ledger">
-        <AgGridReact
+      <div className="grid-head">
+        <h2 className="section-title">Project ledger</h2>
+        <div className="grid-tools">
+          <label className="visually-hidden" htmlFor="ledger-search">
+            Search the ledger
+          </label>
+          <input
+            id="ledger-search"
+            type="search"
+            placeholder="Search the ledger"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <button
+            className="plain"
+            onClick={() =>
+              apiRef.current?.exportDataAsCsv({ fileName: "scopebill-ledger.csv", processCellCallback: exportCell })
+            }
+          >
+            Export CSV
+          </button>
+        </div>
+      </div>
+      <div className="ledger grid-box">
+        <AgGridReact<Row>
           rowData={rows}
           columnDefs={columns}
           domLayout="autoHeight"
           getRowId={(p) => p.data.id}
           defaultColDef={{ sortable: true, filter: true, resizable: true }}
+          quickFilterText={search}
+          pinnedBottomRowData={totals}
+          getRowClass={(p) => (p.node.rowPinned ? "total-row" : undefined)}
+          onGridReady={(event) => {
+            apiRef.current = event.api;
+          }}
         />
       </div>
     </section>
   );
 }
 
+function eventDetail(detail: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (typeof detail.label === "string") parts.push(LABELS[detail.label as Label] ?? detail.label);
+  if (Array.isArray(detail.choices)) parts.push(detail.choices.map((c) => choiceText(String(c))).join(", "));
+  if (typeof detail.amountDueCents === "number") parts.push(`${money(detail.amountDueCents)} due`);
+  if (typeof detail.paidAmount === "string") parts.push(`$${detail.paidAmount} paid`);
+  if (typeof detail.invoiceId === "string") parts.push(`Invoice ${detail.invoiceId}`);
+  if (typeof detail.transactionId === "string") parts.push(`Payment ${detail.transactionId}`);
+  if (typeof detail.eventType === "string") parts.push(detail.eventType);
+  if (detail.injectionSuspected === true) parts.push("Trick message ignored");
+  if (detail.downgraded === true) parts.push("Citation not found");
+  return parts.join(" · ");
+}
+
+/** Every action on the project, as a grid you can filter by who did it and export as evidence. */
 function Timeline({ view }: { view: FreelancerView }) {
+  const [open, setOpen] = useState(false);
+  const apiRef = useRef<GridApi | null>(null);
+
+  const rows = useMemo(
+    () =>
+      [...view.events].reverse().map((event, index) => ({
+        id: `${event.at}-${view.events.length - index}`,
+        at: event.at,
+        who: ACTORS[event.actor] ?? event.actor,
+        what: EVENT_TEXT[event.type] ?? event.type,
+        detail: eventDetail(event.detail),
+      })),
+    [view.events],
+  );
+
+  const columns = useMemo<ColDef<(typeof rows)[number]>[]>(
+    () => [
+      {
+        field: "at",
+        headerName: "When",
+        width: 190,
+        sort: "desc",
+        valueFormatter: (p) => new Date(p.value).toLocaleString(),
+      },
+      { field: "who", headerName: "Who", width: 130 },
+      { field: "what", headerName: "What happened", flex: 2, minWidth: 220 },
+      { field: "detail", headerName: "Details", flex: 2, minWidth: 220, tooltipField: "detail" },
+    ],
+    [],
+  );
+
   return (
-    <details className="card timeline">
+    <details className="card timeline" onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary>Audit trail ({view.events.length})</summary>
-      <ol>
-        {[...view.events].reverse().map((event, index) => (
-          <li key={`${event.at}-${index}`}>
-            <span>{EVENT_TEXT[event.type] ?? event.type}</span>
-            <time className="muted small" dateTime={event.at}>
-              {new Date(event.at).toLocaleString()}
-            </time>
-          </li>
-        ))}
-      </ol>
+      {open && (
+        <>
+          <div className="grid-tools audit-tools">
+            <span className="muted small">Filter the Who column to see only what the AI, PayPal or a person did.</span>
+            <button
+              className="plain"
+              onClick={() =>
+                apiRef.current?.exportDataAsCsv({ fileName: "scopebill-audit-trail.csv", processCellCallback: exportCell })
+              }
+            >
+              Export CSV
+            </button>
+          </div>
+          <div className="grid-box">
+            <AgGridReact
+              rowData={rows}
+              columnDefs={columns}
+              domLayout="autoHeight"
+              getRowId={(p) => p.data.id}
+              defaultColDef={{ sortable: true, filter: true, resizable: true }}
+              pagination={rows.length > 20}
+              paginationPageSize={20}
+              paginationPageSizeSelector={false}
+              tooltipShowDelay={300}
+              onGridReady={(event) => {
+                apiRef.current = event.api;
+              }}
+            />
+          </div>
+        </>
+      )}
     </details>
   );
 }

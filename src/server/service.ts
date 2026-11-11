@@ -16,7 +16,7 @@ import {
 import { RuleError, priceForMinutes, unbilledTotal, type RequestLabel, type ScopeItem } from "../core/scope";
 import type { JsonModel } from "../ai/openrouter";
 import { classifyRequest, draftClientMessage, extractScope } from "../ai/scope-ai";
-import type { InvoiceState, NewInvoice } from "../paypal/client";
+import type { InvoiceNotice, InvoiceState, NewInvoice } from "../paypal/client";
 import { DEMO_AGREEMENT, DEMO_REQUESTS, DEMO_SCOPE } from "./demo";
 import type { Project, ProjectEvent, Store, StoredOrder, StoredRequest } from "./store";
 
@@ -24,7 +24,11 @@ export interface Payments {
   createDraftInvoice(input: NewInvoice, requestId: string): Promise<InvoiceState>;
   sendInvoice(invoiceId: string, requestId: string): Promise<void>;
   getInvoice(invoiceId: string): Promise<InvoiceState>;
+  remindInvoice(invoiceId: string, notice: InvoiceNotice): Promise<void>;
+  cancelInvoice(invoiceId: string, notice: InvoiceNotice): Promise<void>;
 }
+
+const REMINDER_GAP_MS = 60 * 60 * 1000;
 
 export class NotFound extends Error {}
 
@@ -440,28 +444,121 @@ export class ProjectService {
         this.store.saveOrder(updated);
         return updated;
       }
+      return this.recordPayment(project, updated, invoice);
+    });
+  }
 
-      const next: StoredOrder = {
-        ...updated,
-        order: confirmPayment(stored.order, {
-          invoiceId: invoice.id,
-          status: invoice.status,
-          paidAmount: invoice.paidAmount,
-          transactionIds: invoice.transactionIds,
+  private recordPayment(project: Project, stored: StoredOrder, invoice: InvoiceState): StoredOrder {
+    const next: StoredOrder = {
+      ...stored,
+      invoiceStatus: invoice.status,
+      order: confirmPayment(stored.order, {
+        invoiceId: invoice.id,
+        status: invoice.status,
+        paidAmount: invoice.paidAmount,
+        transactionIds: invoice.transactionIds,
+      }),
+    };
+    this.store.transaction(() => {
+      this.store.saveOrder(next);
+      this.event(project.id, "paypal", "payment_confirmed", {
+        orderId: next.order.id,
+        invoiceId: invoice.id,
+        transactionId: next.order.paymentTransactionId,
+        paidAmount: invoice.paidAmount,
+      });
+      this.applyToProject(project, next);
+    });
+    return next;
+  }
+
+  /** Has PayPal email the client a reminder about an unpaid invoice, at most once an hour. */
+  sendReminder(projectId: string, orderId: string): Promise<StoredOrder> {
+    return this.withLock(orderId, async () => {
+      const project = this.project(projectId);
+      const stored = this.order(projectId, orderId);
+      const invoiceId = stored.order.invoiceId;
+      if (stored.order.status !== "awaiting_payment" || !invoiceId) {
+        throw new RuleError("There's no unpaid PayPal invoice to remind the client about");
+      }
+      if (stored.lastReminderAt && Date.now() - Date.parse(stored.lastReminderAt) < REMINDER_GAP_MS) {
+        throw new RuleError("A reminder was sent in the last hour. Give your client a little time.");
+      }
+
+      await this.upstream("PayPal couldn't send the reminder. Try again.", () =>
+        this.payments.remindInvoice(invoiceId, {
+          subject: `A reminder about ${project.title}`.slice(0, 200),
+          note: `Hi ${project.clientName}, this is a friendly reminder about the extras you chose for ${project.title}. Thank you.`.slice(0, 1000),
         }),
-      };
+      );
+
+      const next: StoredOrder = { ...stored, lastReminderAt: new Date().toISOString() };
       this.store.transaction(() => {
         this.store.saveOrder(next);
-        this.event(projectId, "paypal", "payment_confirmed", {
-          orderId,
-          invoiceId,
-          transactionId: next.order.paymentTransactionId,
-          paidAmount: invoice.paidAmount,
-        });
-        this.applyToProject(project, next);
+        this.event(projectId, "paypal", "reminder_sent", { orderId, invoiceId });
       });
       return next;
     });
+  }
+
+  /**
+   * Takes back a change order the client has answered but not paid, so they can
+   * choose again. The PayPal invoice is cancelled first. If PayPal says it was
+   * already paid, the payment is recorded instead and nothing is withdrawn.
+   */
+  withdrawOrder(projectId: string, orderId: string): Promise<{ withdrawn: boolean }> {
+    return this.withLock(orderId, async () => {
+      const project = this.project(projectId);
+      const stored = this.order(projectId, orderId);
+      if (stored.order.status !== "awaiting_payment") {
+        throw new RuleError("Only a change order that is waiting for payment can be withdrawn");
+      }
+
+      const invoiceId = stored.order.invoiceId;
+      if (invoiceId) {
+        const invoice = await this.upstream("PayPal couldn't load the invoice. Try again.", () =>
+          this.payments.getInvoice(invoiceId),
+        );
+        if (invoice.status === "PAID") {
+          this.recordPayment(project, stored, invoice);
+          throw new RuleError("Your client has already paid this invoice, so it can't be withdrawn");
+        }
+        if (invoice.status !== "DRAFT" && invoice.status !== "CANCELLED") {
+          await this.upstream("PayPal couldn't cancel the invoice. Try again.", () =>
+            this.payments.cancelInvoice(invoiceId, {
+              subject: `Updated extras for ${project.title}`.slice(0, 200),
+              note: `Hi ${project.clientName}, this invoice has been cancelled so you can choose again. Nothing is due on it.`.slice(0, 1000),
+            }),
+          );
+        }
+      }
+
+      this.store.transaction(() => {
+        if (invoiceId) this.event(projectId, "paypal", "invoice_cancelled", { orderId, invoiceId });
+        for (const line of stored.order.lines) {
+          const request = this.store.getRequest(projectId, line.requestId);
+          if (request) {
+            const { billedInOrderId: _removed, ...rest } = request;
+            this.store.saveRequest(rest);
+          }
+        }
+        this.store.deleteOrder(projectId, orderId);
+        this.event(projectId, "freelancer", "change_order_withdrawn", { orderId });
+      });
+      return { withdrawn: true };
+    });
+  }
+
+  /**
+   * Handles a verified PayPal webhook about an invoice. The webhook is only a
+   * nudge: payment is still confirmed by reading the invoice back from PayPal.
+   */
+  async handleInvoiceWebhook(eventType: string, invoiceId: string): Promise<boolean> {
+    const stored = this.store.findOrderByInvoiceId(invoiceId);
+    if (!stored) return false;
+    this.event(stored.projectId, "paypal", "webhook_received", { orderId: stored.order.id, invoiceId, eventType });
+    await this.refreshPayment(stored.projectId, stored.order.id);
+    return true;
   }
 
   freelancerView(projectId: string) {
